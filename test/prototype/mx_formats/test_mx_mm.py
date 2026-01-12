@@ -25,6 +25,13 @@ if torch_version_at_least("2.10.0"):
     from torch.nn.functional import ScalingType, SwizzleType
 
 
+devices = []
+if torch.cuda.is_available():
+    devices.append("cuda")
+if torch.xpu.is_available():
+    devices.append("xpu")
+
+
 def _mxfp4_scaled_mm(a_data, b_data, a_scale_block, b_scale_block):
     """Wrapper for F.scaled_mm with MXFP4 configuration."""
     if not torch_version_at_least("2.10.0"):
@@ -44,9 +51,10 @@ def _mxfp4_scaled_mm(a_data, b_data, a_scale_block, b_scale_block):
     )
 
 
-def run_matrix_test(M: int, K: int, N: int, format) -> float:
+
+@pytest.mark.parametrize("device", devices)
+def run_matrix_test(device, M: int, K: int, N: int, format) -> float:
     dtype = torch.bfloat16
-    device = torch.device("cuda")
 
     a = torch.rand((M, K), dtype=dtype, device=device)
     b = torch.rand((N, K), dtype=dtype, device=device)
@@ -80,10 +88,7 @@ def run_matrix_test(M: int, K: int, N: int, format) -> float:
     return compute_error(out_hp, out).item()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.skipif(
-    not is_sm_at_least_100(), reason="CUDA capability >= 10.0 required for mxfloat8"
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize(
     "size",
     [
@@ -104,9 +109,12 @@ def run_matrix_test(M: int, K: int, N: int, format) -> float:
 @pytest.mark.parametrize(
     "format", ["fp8", "fp4"] if torch_version_at_least("2.10.0") else ["fp8"]
 )
-def test_matrix_multiplication(size, format):
+def test_matrix_multiplication(device, size, format):
+    if device == "cuda" and not is_sm_at_least_100():
+        pytest.skip("CUDA capability >= 10.0 required for mxfloat8")
+
     M, K, N = size
-    sqnr = run_matrix_test(M, K, N, format)
+    sqnr = run_matrix_test(device, M, K, N, format)
     threshold = 80.0
     assert sqnr >= threshold, (
         f"{format} SQNR {sqnr} below threshold for dims {M}x{K}x{N}"

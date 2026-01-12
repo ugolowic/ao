@@ -55,6 +55,21 @@ if not torch_version_at_least("2.8.0"):
     pytest.skip("Unsupported PyTorch version", allow_module_level=True)
 
 
+devices = []
+if torch.cuda.is_available():
+    devices.append("cuda")
+if torch.xpu.is_available():
+    devices.append("xpu")
+
+
+@pytest.fixture(autouse=True)
+def xpu_cleanup():
+    yield
+    if torch.xpu.is_available():
+        torch.xpu.synchronize()
+        torch.xpu.empty_cache()
+
+
 # TODO: shared utils file for benchmarking and testing
 def to_mx_dim1_reference(x_hp, block_size, scaling_mode):
     x_hp = x_hp.t().contiguous()
@@ -194,10 +209,10 @@ def test_float6_e2m3_table():
 # below we test pos and neg versions of all of these
 
 
-def _test_fp4_case(f32_val, f32_val_ref, f4_enc_ref):
+def _test_fp4_case(f32_val, f32_val_ref, f4_enc_ref, device):
     # 1. verify that a fp32 value gets quantized to correct fp4 encoding
     # TODO test on cuda
-    f4_unpacked = f32_to_f4_unpacked(torch.tensor(f32_val))
+    f4_unpacked = f32_to_f4_unpacked(torch.tensor(f32_val, device=device))
     s_enc, e_enc, m_enc = get_sem_bits(f4_unpacked, bitwidth=4)
     assert s_enc + e_enc + m_enc == f4_enc_ref
 
@@ -206,12 +221,12 @@ def _test_fp4_case(f32_val, f32_val_ref, f4_enc_ref):
     assert f32_val_ref == f32_dequantized.item()
 
 
-def _test_fp4_cases(cases):
+def _test_fp4_cases(cases, device):
     # test the exp and mantissa with both values of the sign bit
     for s_enc in "0", "1":
         s_i = 1.0 if s_enc == "0" else -1.0
         for val, val_ref, em_enc in cases:
-            _test_fp4_case(s_i * val, s_i * val_ref, s_enc + em_enc)
+            _test_fp4_case(s_i * val, s_i * val_ref, s_enc + em_enc, device)
 
 
 # note: below are written as individual test cases for easy command line
@@ -237,26 +252,29 @@ def _test_fp4_cases(cases):
 #    5.0 -> 4.0
 
 
-def test_fp4_0_0():
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_0_0(device):
     cases = [
         (0.25, 0.0, "000"),  # tie to even
         (0.1, 0.0, "000"),
         (0.0, 0.0, "000"),
         # note: -0.1 is tested in the negative zero test
     ]
-    _test_fp4_cases(cases)
+    _test_fp4_cases(cases, device)
 
 
-def test_fp4_0_5():
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_0_5(device):
     cases = [
         (0.6, 0.5, "001"),
         (0.5, 0.5, "001"),
         (0.4, 0.5, "001"),
     ]
-    _test_fp4_cases(cases)
+    _test_fp4_cases(cases, device)
 
 
-def test_fp4_1_0():
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_1_0(device):
     cases = [
         (1.25, 1.0, "010"),  # tie to even
         (1.1, 1.0, "010"),
@@ -264,19 +282,21 @@ def test_fp4_1_0():
         (0.9, 1.0, "010"),
         (0.75, 1.0, "010"),  # tie to even
     ]
-    _test_fp4_cases(cases)
+    _test_fp4_cases(cases, device)
 
 
-def test_fp4_1_5():
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_1_5(device):
     cases = [
         (1.6, 1.5, "011"),
         (1.5, 1.5, "011"),
         (1.4, 1.5, "011"),
     ]
-    _test_fp4_cases(cases)
+    _test_fp4_cases(cases, device)
 
 
-def test_fp4_2_0():
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_2_0(device):
     cases = [
         (2.5, 2.0, "100"),  # tie to even
         (2.1, 2.0, "100"),
@@ -284,19 +304,21 @@ def test_fp4_2_0():
         (1.9, 2.0, "100"),
         (1.75, 2.0, "100"),  # tie to even
     ]
-    _test_fp4_cases(cases)
+    _test_fp4_cases(cases, device)
 
 
-def test_fp4_3_0():
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_3_0(device):
     cases = [
         (3.1, 3.0, "101"),
         (3.0, 3.0, "101"),
         (2.9, 3.0, "101"),
     ]
-    _test_fp4_cases(cases)
+    _test_fp4_cases(cases, device)
 
 
-def test_fp4_4_0():
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_4_0(device):
     cases = [
         (5.0, 4.0, "110"),  # tie to even
         (4.1, 4.0, "110"),
@@ -304,20 +326,24 @@ def test_fp4_4_0():
         (3.9, 4.0, "110"),
         (3.5, 4.0, "110"),  # tie to even
     ]
-    _test_fp4_cases(cases)
+    _test_fp4_cases(cases, device)
 
 
-def test_fp4_6_0():
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_6_0(device):
     cases = [
         (6.1, 6.0, "111"),
         (6.0, 6.0, "111"),
         (5.9, 6.0, "111"),
     ]
-    _test_fp4_cases(cases)
+    _test_fp4_cases(cases, device)
 
 
-def test_fp4_pack_unpack():
-    orig_vals = torch.Tensor([[0.0, 0.5, 4.0, -0.0], [-0.0, 1.0, -6.0, 3.0]])
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_fp4_pack_unpack(device):
+    orig_vals = torch.Tensor([[0.0, 0.5, 4.0, -0.0], [-0.0, 1.0, -6.0, 3.0]]).to(
+        device
+    )
     orig_vals_f4_unpacked = f32_to_f4_unpacked(orig_vals)
     orig_vals_f4_packed = pack_uint4(orig_vals_f4_unpacked)
 
@@ -337,6 +363,7 @@ def test_fp4_pack_unpack():
             ],
         ],
         dtype=torch.uint8,
+        device=device,
     )
 
     assert torch.all(orig_vals_f4_packed == expected_f4_packed)
@@ -346,8 +373,9 @@ def test_fp4_pack_unpack():
     assert torch.all(orig_vals_dq == orig_vals)
 
 
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
 @pytest.mark.parametrize("dtype_name", (DTYPE_FP6_E2M3, DTYPE_FP6_E3M2))
-def test_fp6_values(dtype_name):
+def test_fp6_values(dtype_name, device):
     """
     The fp6 dtypes have 2**6 = 64 unique values each. The test
     below tests the f32 -> f6 and f6 -> f32 cast for each value.
@@ -356,7 +384,7 @@ def test_fp6_values(dtype_name):
     """
 
     for i in range(2**6):
-        t = torch.tensor(i, dtype=torch.uint8)
+        t = torch.tensor(i, dtype=torch.uint8, device=device)
         bits = get_bits(t.to(torch.int8))
 
         # go from bits to f32 ref
@@ -369,7 +397,8 @@ def test_fp6_values(dtype_name):
         s_i, e_i, m_f, special_value = sem_bits_to_sem_vals(
             s_enc, e_enc, m_enc, dtype_name
         )
-        f32_ref = torch.tensor(sem_vals_to_f32(s_i, e_i, m_f, special_value))
+        f32_ref = torch.tensor(sem_vals_to_f32(s_i, e_i, m_f, special_value),
+                               device=device)
 
         # test cast to f6
         if dtype_name == DTYPE_FP6_E2M3:
@@ -391,18 +420,7 @@ def test_fp6_values(dtype_name):
         torch.testing.assert_close(f32, f32_ref, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("device", devices + ["cpu"])
 @pytest.mark.parametrize(
     "f32_val,f6_e3m2_enc",
     [
@@ -443,17 +461,17 @@ def triton_to_mxfp8_dim0_reference(
 
 
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(
-    not is_sm_at_least_100(),
-    reason="mxfp8 in triton requires CUDA capability 10.0 or greater",
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("M", (128, 256))
 @pytest.mark.parametrize("K", (128, 256))
 @pytest.mark.parametrize(
     "scaling_mode", (ScaleCalculationMode.FLOOR, ScaleCalculationMode.RCEIL)
 )
-def test_triton_mxfp8_dim1_randn(M, K, scaling_mode):
-    x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+def test_triton_mxfp8_dim1_randn(device, M, K, scaling_mode):
+    if device == "cuda" and not is_sm_at_least_100():
+        pytest.skip("mxfp8 in triton requires CUDA capability 10.0 or greater")
+
+    x = torch.randn(M, K, dtype=torch.bfloat16, device=device)
     x_mx_ref, x_s_ref = triton_to_mxfp8_dim1_reference(
         x, block_size=32, scaling_mode=scaling_mode
     )
@@ -465,17 +483,17 @@ def test_triton_mxfp8_dim1_randn(M, K, scaling_mode):
 
 
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(
-    not is_sm_at_least_100(),
-    reason="mxfp8 requires CUDA capability 10.0 or greater",
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("M", (128, 256))
 @pytest.mark.parametrize("K", (128, 256))
 @pytest.mark.parametrize(
     "scaling_mode", (ScaleCalculationMode.FLOOR, ScaleCalculationMode.RCEIL)
 )
-def test_triton_mxfp8_dim0_randn(M, K, scaling_mode):
-    x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+def test_triton_mxfp8_dim0_randn(device, M, K, scaling_mode):
+    if device == "cuda" and not is_sm_at_least_100():
+        pytest.skip("mxfp8 requires CUDA capability 10.0 or greater")
+
+    x = torch.randn(M, K, dtype=torch.bfloat16, device=device)
     x_mx_ref, x_s_ref = triton_to_mxfp8_dim0_reference(
         x, block_size=32, scaling_mode=scaling_mode
     )
@@ -489,15 +507,15 @@ def test_triton_mxfp8_dim0_randn(M, K, scaling_mode):
 
 
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(
-    not is_sm_at_least_100(),
-    reason="mxfp8 requires CUDA capability 10.0 or greater",
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize(
     "scaling_mode", (ScaleCalculationMode.FLOOR, ScaleCalculationMode.RCEIL)
 )
-def test_triton_mxfp8_dim0_zeros(scaling_mode):
-    x = torch.zeros(128, 256, dtype=torch.bfloat16, device="cuda")
+def test_triton_mxfp8_dim0_zeros(device, scaling_mode):
+    if device == "cuda" and not is_sm_at_least_100():
+        pytest.skip("mxfp8 requires CUDA capability 10.0 or greater")
+
+    x = torch.zeros(128, 256, dtype=torch.bfloat16, device=device)
     x_mx_ref, x_s_ref = triton_to_mxfp8_dim0_reference(
         x, block_size=32, scaling_mode=scaling_mode
     )
@@ -512,15 +530,15 @@ def test_triton_mxfp8_dim0_zeros(scaling_mode):
 
 
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(
-    not is_sm_at_least_100(),
-    reason="mxfp8 requires CUDA capability 10.0 or greater",
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("M", (128, 256))
 @pytest.mark.parametrize("K", (128, 256))
 @pytest.mark.parametrize("orig_dtype", (torch.float32, torch.bfloat16))
-def test_triton_mxfp8_dequant_dim0(M, K, orig_dtype):
-    x = torch.zeros(M, K, dtype=orig_dtype, device="cuda")
+def test_triton_mxfp8_dequant_dim0(M, K, orig_dtype, device):
+    if device == "cuda" and not is_sm_at_least_100():
+        pytest.skip("mxfp8 requires CUDA capability 10.0 or greater")
+
+    x = torch.zeros(M, K, dtype=orig_dtype, device=device)
     block_size = 32
     x_data, x_scales = triton_to_mxfp8_dim0_reference(x, block_size=32)
     hp_ref = to_dtype(
@@ -534,7 +552,7 @@ def test_triton_mxfp8_dequant_dim0(M, K, orig_dtype):
     torch.testing.assert_close(hp_t, hp_ref, rtol=0, atol=0)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize(
     "shape",
     [
@@ -548,8 +566,8 @@ def test_triton_mxfp8_dequant_dim0(M, K, orig_dtype):
         (128, 1),
     ],
 )
-def test_rearrange(shape):
-    scales = torch.randint(256, size=shape, device="cuda", dtype=torch.uint8)
+def test_rearrange(device, shape):
+    scales = torch.randint(256, size=shape, device=device, dtype=torch.uint8)
     eager = to_blocked(scales, False)
     triton = to_blocked(scales, True)
     torch.testing.assert_close(eager, triton, atol=0, rtol=0)
