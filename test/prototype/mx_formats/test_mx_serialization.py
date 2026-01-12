@@ -27,16 +27,24 @@ if not torch_version_at_least("2.8.0"):
     pytest.skip("Unsupported PyTorch version", allow_module_level=True)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.skipif(not is_sm_at_least_100(), reason="needs CUDA capability 10.0+")
+devices = []
+if torch.cuda.is_available():
+    devices.append("cuda")
+if torch.xpu.is_available():
+    devices.append("xpu")
+
+
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("recipe_name", ["mxfp8", "nvfp4"])
-def test_serialization(recipe_name):
+def test_serialization(device, recipe_name):
     """
     Ensure that only `import torchao.prototype.mx_formats` is needed to load MX
     and NV checkpoints.
     """
+    if device == "cuda" and not is_sm_at_least_100():
+        pytest.skip("needs CUDA capability 10.0+")
 
-    m = nn.Linear(32, 128, bias=False, dtype=torch.bfloat16, device="cuda")
+    m = nn.Linear(32, 128, bias=False, dtype=torch.bfloat16, device=device)
     fname = None
     with tempfile.NamedTemporaryFile(delete=False, mode="w") as f:
         if recipe_name == "mxfp8":

@@ -38,6 +38,13 @@ if not torch_version_at_least("2.8.0"):
     pytest.skip("Unsupported PyTorch version", allow_module_level=True)
 
 
+devices = []
+if torch.cuda.is_available():
+    devices.append("cuda")
+if torch.xpu.is_available():
+    devices.append("xpu")
+
+
 # source: https://stackoverflow.com/a/22638709
 @pytest.fixture(autouse=True)
 def run_around_tests():
@@ -81,7 +88,7 @@ elem_dtypes = (
 )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("elem_dtype", elem_dtypes)
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("input_shape", [(128, 256), (1, 128, 256), (1, 1, 128, 256)])
@@ -103,7 +110,7 @@ elem_dtypes = (
     ],
 )
 def test_linear_eager_vs_hp(
-    elem_dtype, bias, input_shape, mxfp8_cast_kernel_choice, scale_calculation_mode
+    device, elem_dtype, bias, input_shape, mxfp8_cast_kernel_choice, scale_calculation_mode
 ):
     """
     Smoke test for training linear module with mx weight, compares the following:
@@ -117,19 +124,20 @@ def test_linear_eager_vs_hp(
             torch.float8_e4m3fn,
         ):
             pytest.skip("unsupported configuration")
-        elif not is_sm_at_least_89():
+        elif device == "cuda" and not is_sm_at_least_89():
             pytest.skip("CUDA capability >= 8.9 required for float8 in triton")
-
-    if mxfp8_cast_kernel_choice == MXFP8Dim1CastKernelChoice.TRITON:
+    elif mxfp8_cast_kernel_choice == MXFP8Dim1CastKernelChoice.TRITON:
         if scale_calculation_mode not in (
             ScaleCalculationMode.FLOOR,
             ScaleCalculationMode.RCEIL,
         ):
             pytest.skip("triton mxfp8 quantization kernels only require sm100")
-        if not is_sm_at_least_100():
-            pytest.skip("triton mxfp8 quantization kernels require sm100")
+        elif device == "cuda" and not is_sm_at_least_100():
+            pytest.skip("triton mxfp8 quantization kernels on CUDA require sm100")
     elif mxfp8_cast_kernel_choice == MXFP8Dim1CastKernelChoice.CUDA:
-        if scale_calculation_mode not in (
+        if device == "xpu":
+            pytest.skip("CUDA kernel not supported on xpu")
+        elif scale_calculation_mode not in (
             ScaleCalculationMode.FLOOR,
             ScaleCalculationMode.RCEIL,
         ):
@@ -144,7 +152,7 @@ def test_linear_eager_vs_hp(
     grad_shape[-1] = 256
 
     m = nn.Sequential(
-        nn.Linear(256, 256, bias=bias, device="cuda", dtype=torch.bfloat16),
+        nn.Linear(256, 256, bias=bias, device=device, dtype=torch.bfloat16),
     )
     m_mx = copy.deepcopy(m)
     config = MXLinearConfig(
@@ -158,10 +166,10 @@ def test_linear_eager_vs_hp(
     quantize_(m_mx, config)
 
     x_ref = torch.randn(
-        *input_shape, device="cuda", dtype=torch.bfloat16
+        *input_shape, device=device, dtype=torch.bfloat16
     ).requires_grad_()
     x = copy.deepcopy(x_ref)
-    g = torch.randn(*grad_shape, device="cuda")
+    g = torch.randn(*grad_shape, device=device)
 
     y_ref = m(x_ref)
     y_mx = m_mx(x)
@@ -185,31 +193,39 @@ def test_linear_eager_vs_hp(
         assert x_g_sqnr >= 8.0
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.skipif(
-    not is_sm_at_least_100(),
-    reason="CUDA capability >= 10.0 required for mxfloat8",
-)
-@pytest.mark.skipif(
-    not is_cuda_version_at_least(12, 8),
-    reason="CUDA version >= 12.8 required for MXFP8",
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize(
     "recipe_name",
     [
         MXLinearRecipeName.MXFP8_CUBLAS,
         MXLinearRecipeName.MXFP4_CUTLASS,
+        # TODO add XPU recipe
     ],
 )
 @pytest.mark.parametrize("mkn", [(128, 256, 512), (256, 512, 128), (512, 128, 256)])
-def test_linear_eager_emulated_vs_real_gemm(recipe_name, mkn):
+def test_linear_eager_emulated_vs_real_gemm(device, recipe_name, mkn):
+    if device == "cuda":
+        if not is_cuda_version_at_least(12, 8):
+            pytest.skip("CUDA version >= 12.8 required for MXFP8")
+        if not is_sm_at_least_100():
+            pytest.skip("CUDA capability >= 10.0 required for mxfloat8")
+
+    if device == "xpu" and recipe_name in (
+        MXLinearRecipeName.MXFP8_CUBLAS,
+        MXLinearRecipeName.MXFP4_CUTLASS
+    ):
+        pytest.skip("cuBLAS and cutlass recipes are not supported in xpu")
+
+    if device == "xpu":
+        pytest.fail("TODO: implement the xpu recipe")
+
     M, K, N = mkn
 
-    x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda").requires_grad_()
+    x = torch.randn(M, K, dtype=torch.bfloat16, device=device).requires_grad_()
     x_copy = copy.deepcopy(x)
-    g = torch.randn(M, N, device="cuda", dtype=torch.bfloat16)
+    g = torch.randn(M, N, device=device, dtype=torch.bfloat16)
     m_emulated = nn.Sequential(
-        nn.Linear(K, N, bias=False, device="cuda", dtype=torch.bfloat16),
+        nn.Linear(K, N, bias=False, device=device, dtype=torch.bfloat16),
     )
     m_real = copy.deepcopy(m_emulated)
 
@@ -239,26 +255,26 @@ def test_linear_eager_emulated_vs_real_gemm(recipe_name, mkn):
 
 
 # TODO(future): enable compile support
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_activation_checkpointing():
+@pytest.mark.parametrize("device", devices)
+def test_activation_checkpointing(device):
     input_shape = (16, 4)
     grad_shape = (16, 8)
     elem_dtype = torch.float8_e4m3fn
 
     m = nn.Sequential(
-        nn.Linear(4, 8, bias=True, device="cuda"),
-        nn.Linear(8, 8, bias=True, device="cuda"),
+        nn.Linear(4, 8, bias=True, device=device),
+        nn.Linear(8, 8, bias=True, device=device),
     )
     config = MXLinearConfig(block_size=4, elem_dtype=elem_dtype)
     quantize_(m, config=config)
 
-    x = torch.randn(*input_shape, device="cuda").requires_grad_()
-    g = torch.randn(*grad_shape, device="cuda")
+    x = torch.randn(*input_shape, device=device).requires_grad_()
+    g = torch.randn(*grad_shape, device=device)
     y = torch.utils.checkpoint.checkpoint(m, x, use_reentrant=False)
     y.backward(g)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("hp_dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize(
     "recipe_name",
@@ -269,6 +285,7 @@ def test_activation_checkpointing():
         # slow
         # "mxfp4_emulated",
         # "mxfp4_cutlass",
+        # TODO add XPU recipe [?]
     ],
 )
 @pytest.mark.parametrize("bias", [False, True])
@@ -293,31 +310,35 @@ def test_activation_checkpointing():
     ],
 )
 def test_linear_compile(
-    hp_dtype, recipe_name, bias, mxfp8_cast_kernel_choice, scale_calculation_mode
+    device, hp_dtype, recipe_name, bias, mxfp8_cast_kernel_choice, scale_calculation_mode
 ):
     """
     Verify that compile does not change numerics of MX linear fw + bw
     """
-    if recipe_name in ["mxfp8_emulated"]:
+    if device == "cuda" and recipe_name in ["mxfp8_emulated"]:
         if not is_sm_at_least_89():
             pytest.skip("CUDA capability >= 8.9 required for float8 in triton")
+
+    if mxfp8_cast_kernel_choice == MXFP8Dim1CastKernelChoice.CUDA and device == "xpu":
+        pytest.skip("CUDA kernel not supported on xpu")
 
     if recipe_name in ["mxfp8_cublas", "mxfp4_cutlass"]:
         if not torch_version_at_least("2.8.0"):
             pytest.skip("torch.compile requires PyTorch 2.8+")
-        if not is_sm_at_least_100():
+        elif device == "xpu":
+            pytest.skip("cuBLAS and cutlass not supported on xpu")
+        elif device == "cuda" and not is_sm_at_least_100():
             pytest.skip("CUDA capability >= 10.0 required for MX gemms")
-
-    if bias and recipe_name in ["mxfp8_cublas", "mxfp4_cutlass"]:
-        # TODO(future PR): fix this, things are clearly broken with bias=True
-        pytest.skip("this test is broken for non-emulated recipes with bias=True")
+        elif bias:
+            # TODO(future PR): fix this, things are clearly broken with bias=True
+            pytest.skip("this test is broken for non-emulated recipes with bias=True")
 
     if mxfp8_cast_kernel_choice != MXFP8Dim1CastKernelChoice.TORCH:
         if recipe_name not in ("mxfp8_emulated", "mxfp8_cublas"):
             pytest.skip("unsupported configuration")
-        if not is_sm_at_least_89():
+        elif device == "cuda" and not is_sm_at_least_89():
             pytest.skip("CUDA capability >= 8.9 required for float8 in triton")
-        if hp_dtype != torch.bfloat16:
+        elif hp_dtype != torch.bfloat16:
             pytest.skip("unsupported configuration")
 
     if mxfp8_cast_kernel_choice == MXFP8Dim1CastKernelChoice.TRITON:
@@ -328,7 +349,7 @@ def test_linear_compile(
             pytest.skip(
                 "triton mxfp8 quantization kernels only support FLOOR and RCEIL scaling modes"
             )
-        if is_sm_at_least_100():
+        if device == "cuda" and not is_sm_at_least_100():
             pytest.skip("triton mxfp8 quantization kernels require sm100")
     elif mxfp8_cast_kernel_choice == MXFP8Dim1CastKernelChoice.CUDA:
         if scale_calculation_mode not in (
@@ -336,9 +357,11 @@ def test_linear_compile(
             ScaleCalculationMode.RCEIL,
         ):
             pytest.skip("unsupported configuration")
-        elif not is_sm_at_least_100():
+        elif device == "xpu":
+            pytest.skip("CUDA kernel not supported on xpu")
+        elif device == "cuda" and not is_sm_at_least_100():
             pytest.skip("CUDA capability >= 10.0 required for MX dim1 cast cuda kernel")
-        elif not is_cuda_version_at_least(12, 8):
+        elif device == "cuda" and not is_cuda_version_at_least(12, 8):
             pytest.skip("CUDA version >= 12.8 required for MXFP8")
 
     if hp_dtype == torch.bfloat16 and recipe_name != "mxfp8_cublas":
@@ -351,6 +374,7 @@ def test_linear_compile(
         hp_dtype == torch.float32
         and recipe_name == "mxfp8_emulated"
         and mxfp8_cast_kernel_choice == MXFP8Dim1CastKernelChoice.TORCH
+        and device == "cuda"
         and not is_sm_at_least_100()
     ):
         # TODO(future): debug this
@@ -363,7 +387,7 @@ def test_linear_compile(
     input_shape = (M, K)
     grad_shape = (M, N)
     m_mx = nn.Sequential(
-        nn.Linear(K, N, bias=bias, device="cuda", dtype=hp_dtype),
+        nn.Linear(K, N, bias=bias, device=device, dtype=hp_dtype),
     )
     config = MXLinearConfig.from_recipe_name(recipe_name)
     config.mxfp8_cast_kernel_choice = mxfp8_cast_kernel_choice
@@ -373,9 +397,9 @@ def test_linear_compile(
     m_mx_c = copy.deepcopy(m_mx)
     m_mx_c = torch.compile(m_mx_c, fullgraph=True, backend="inductor")
 
-    x_ref = torch.randn(*input_shape, device="cuda", dtype=hp_dtype).requires_grad_()
+    x_ref = torch.randn(*input_shape, device=device, dtype=hp_dtype).requires_grad_()
     x = copy.deepcopy(x_ref)
-    g = torch.randn(*grad_shape, device="cuda", dtype=hp_dtype)
+    g = torch.randn(*grad_shape, device=device, dtype=hp_dtype)
 
     y_ref = m_mx(x_ref)
     y = m_mx_c(x)
