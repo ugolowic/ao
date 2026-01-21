@@ -693,7 +693,7 @@ if torch_version_at_least("2.7.0") and has_triton():
         )
         wrap_triton(_dequant_mxfp8_kernel)[grid](
             e4m3_data,
-            e8m0_scales.to(torch.uint8),
+            e8m0_scales.view(torch.uint8),
             out_buffer,
             e4m3_data.size(0),
             e4m3_data.size(1),
