@@ -458,7 +458,10 @@ else:
 _triton_kernels_available = (
     torch_version_at_least("2.7.0")
     and has_triton()
-    and torch.cuda.is_available()
+)
+
+_cuda_supports_triton = (
+    torch.cuda.is_available()
     and (is_sm_at_least_100() and is_cuda_version_at_least(12, 8))
     or (is_ROCM() and is_MI350())
 )
@@ -853,6 +856,9 @@ if _triton_kernels_available:
         * `output`: the `float8_e4m3fn` values of `x` cast to mxfp8 across dim0 (rowwise)
         * `scale`: the `e8m0` values of `x_scale` used to cast `x` to mxfp8 across dim0
         """
+        if x.device.type == "cuda" and not _cuda_supports_triton:
+            raise AssertionError("needs cuda version at least 12.8 and sm at least 100")
+
         assert x.is_contiguous(), "`x` must be contiguous"
         assert inner_block_size <= 32, "inner_block_size must be <= 32"
         assert x.dtype == torch.bfloat16, (
@@ -923,6 +929,9 @@ if _triton_kernels_available:
         * `output_col_major`: the `float8_e4m3fn` values of `x` cast to mxfp8 across dim1
         * `col_scale`: the `e8m0` values of `x_scale` used to cast `x` to mxfp8 across dim1
         """
+        if x.device.type == "cuda" and not _cuda_supports_triton:
+            raise AssertionError("needs cuda version at least 12.8 and sm at least 100")
+
         assert x.is_contiguous(), "`x` must be contiguous"
         assert inner_block_size <= 32
 
