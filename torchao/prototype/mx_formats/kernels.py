@@ -471,7 +471,7 @@ if _triton_kernels_available:
     import triton.language as tl
     from torch.library import triton_op, wrap_triton
 
-    IS_ROCM = tl.constexpr(is_ROCM())
+    IS_CUDA = tl.constexpr(torch.cuda.is_available())
 
     @triton.jit
     def _triton_calculate_scale_rceil(x, axis, USE_PTX: tl.constexpr):
@@ -689,7 +689,7 @@ if _triton_kernels_available:
             col_scale_r, col_scale_e8m0_r = _triton_calculate_scale_rceil(
                 x_block_abs_t_r,
                 axis=1,
-                USE_PTX=not IS_ROCM,
+                USE_PTX=IS_CUDA,
             )
         else:
             tl.static_assert(SCALING_MODE == "floor")
@@ -799,7 +799,7 @@ if _triton_kernels_available:
             scale_fp32_r, scale_e8m0_r = _triton_calculate_scale_rceil(
                 x_block_abs_r,
                 axis=1,
-                USE_PTX=not IS_ROCM,
+                USE_PTX=IS_CUDA,
             )
         else:
             tl.static_assert(SCALING_MODE == "floor")
