@@ -425,6 +425,59 @@ if torch_version_at_least("2.7.0") and has_triton():
 
         return out
 
+
+    # @triton.jit
+    # def _f32_to_f4_e2m1(x):
+    #     """Convert float32 values to FP4 e2m1 encoding (4 bits in low nibble).
+
+    #     Pure Triton implementation of FP32 → FP4 e2m1 conversion with
+    #     round-to-nearest-even and saturation to ±6.0.
+
+    #     This is a port of ``_f32_to_floatx_unpacked`` from
+    #     ``torchao/prototype/custom_fp_utils.py``, specialized for e2m1
+    #     (ebits=2, mbits=1, exp_bias=1).
+
+    #     Returns int32 tensor with FP4 encoding in bits 0-3.
+    #     """
+    #     # Reinterpret float32 bits as int32
+    #     x_bits = x.to(tl.int32, bitcast=True)
+
+    #     # Extract sign and absolute value (as int32 bit pattern)
+    #     # Use negative literal for 0x80000000 since Triton int32 is signed
+    #     SIGN_BIT: tl.constexpr = -2147483648  # 0x80000000 as signed int32
+    #     sign = x_bits & SIGN_BIT
+    #     x_abs = x_bits & 0x7FFFFFFF
+
+    #     # For positive IEEE 754, integer comparison == float comparison
+    #     # max_normal = 6.0 = 0x40C00000, min_normal = 1.0 = 0x3F800000
+    #     is_saturated = x_abs >= 0x40C00000
+    #     is_denormal = x_abs < 0x3F800000
+
+    #     # --- Denormal path ---
+    #     # Add magic constant 2^22 (=4194304.0 = 0x4A800000) in float domain,
+    #     # then subtract as integer. This aligns sub-normal mantissa bits and
+    #     # applies round-to-nearest-even via the float addition hardware.
+    #     x_abs_f32 = x_abs.to(tl.float32, bitcast=True)
+    #     DENORM_MAGIC: tl.constexpr = 0x4A800000  # 149 << 23
+    #     denorm_result = (x_abs_f32 + 4194304.0).to(tl.int32, bitcast=True) - DENORM_MAGIC
+
+    #     # --- Normal path ---
+    #     # Adjust exponent bias from FP32 (127) to e2m1 (1) and add rounding
+    #     # bias, then shift to extract the e2m1 encoding.
+    #     # val_to_add = ((1 - 127) << 23) + (2^21 - 1)
+    #     VAL_TO_ADD: tl.constexpr = ((1 - 127) << 23) + ((1 << 21) - 1)
+    #     mant_odd = (x_abs >> 22) & 1
+    #     normal_result = (x_abs + VAL_TO_ADD + mant_odd) >> 22
+
+    #     # --- Combine branches ---
+    #     result = tl.where(is_saturated, 7, normal_result)
+    #     result = tl.where(is_denormal, denorm_result, result)
+
+    #     # Add sign: bit 3 of the 4-bit encoding
+    #     result = result | tl.where(sign != 0, 8, 0)
+    #     return result
+
+
     @triton_mx_block_rearrange.register_fake
     def _(scale_tensor):
         rows, cols = scale_tensor.shape
