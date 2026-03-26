@@ -11,15 +11,18 @@ TODO(future): make this run in CI
 """
 
 import os
+import traceback
+import sys
 
-import pytest
 import torch
 
 from torchao.utils import torch_version_at_least
 
 if not torch_version_at_least("2.7.0"):
-    pytest.skip("Unsupported PyTorch version", allow_module_level=True)
+    print("Unsupported PyTorch version, skipping test")
+    sys.exit(0)
 
+import torch.distributed as dist
 from torch.distributed._tensor import DTensor, Shard, distribute_tensor
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 from tqdm import tqdm
@@ -38,11 +41,19 @@ torch.set_float32_matmul_precision("high")
 
 def setup_distributed():
     world_size = int(os.environ.get("WORLD_SIZE", -1))
-    device_mesh = init_device_mesh("cuda", (world_size,))
+    if torch.cuda.is_available():
+        dist.init_process_group("nccl")
+        device_type = "cuda"
+    elif torch.xpu.is_available():
+        dist.init_process_group("xccl")
+        device_type = "xpu"
+    else:
+        raise RuntimeError("No CUDA or XPU devices available")
+    device_mesh = init_device_mesh(device_type, (world_size,))
     # seed must be the same in all processes
     torch.manual_seed(1)
     local_rank = torch.distributed.get_rank()
-    torch.cuda.set_device(local_rank)
+    torch.get_device_module(device_type).set_device(local_rank)
     return device_mesh
 
 
@@ -112,20 +123,38 @@ if __name__ == "__main__":
         _test_dtensor_cast_to_mxfp8,
         _test_mxfp8_mlp_tensor_parallelism_emulated,
     ]
-    from torchao.prototype.moe_training.kernels.mxfp8.quant import (
-        _mxfp8_cuda_kernels_available,
-    )
 
-    if _mxfp8_cuda_kernels_available:
+    if device_mesh.device_type == "cuda":
+        from torchao.prototype.moe_training.kernels.mxfp8.quant import (
+            _mxfp8_cuda_kernels_available,
+        )
+
+        if _mxfp8_cuda_kernels_available:
+            tests.append(_test_mxfp8_mlp_tensor_parallelism_auto)
+        else:
+            print("Skipping auto test: requires SM >= 100 and CUDA >= 12.8")
+
+    elif device_mesh.device_type == "xpu":
         tests.append(_test_mxfp8_mlp_tensor_parallelism_auto)
-    else:
-        print("Skipping auto test: requires SM >= 100 and CUDA >= 12.8")
 
-    for test in tqdm(tests, desc="Running tests"):
+    rank = torch.distributed.get_rank()
+    exceptions = []
+    for test in tqdm(tests, desc="Running tests", disable=rank != 0):
         try:
             test(device_mesh)
         except Exception as e:
-            print(f"Test {test.__name__} failed with error: {e}")
-            raise e
+            if rank == 0:
+                print(f"\033[31m❌ FAILED {test.__name__}: {e}\033[0m")
+                tb = traceback.format_exc()
+                exceptions.append((test.__name__, e, tb))
+        else:
+            if rank == 0:
+                print(f"\033[32m✅ PASSED {test.__name__}\033[0m")
 
+    if rank == 0:
+        for test_name, e, tb in exceptions:
+            print("-" * 10, test_name, "-" * 10)
+            print(tb)
+
+        print(f"FAILED: {len(exceptions)} PASSED: {len(tests) - len(exceptions)}")
     torch.distributed.destroy_process_group()

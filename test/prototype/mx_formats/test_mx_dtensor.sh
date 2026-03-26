@@ -8,10 +8,18 @@
 # terminate script on first error
 set -e
 
-if python -c 'import torch;print(torch.cuda.is_available())' | grep -q "False"; then
-    echo "Skipping test_dtensor.sh because no CUDA devices are available."
-    exit
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # integration tests for TP/SP
-NCCL_DEBUG=WARN torchrun --nproc_per_node 2 test/prototype/mx_formats/test_mx_dtensor.py
+if python -c 'import torch; assert torch.cuda.is_available()' 2>/dev/null; then
+    echo "CUDA available, proceeding with test."
+    NCCL_DEBUG=WARN torchrun --nproc_per_node 2 "${SCRIPT_DIR}/test_mx_dtensor.py"
+
+elif python -c 'import torch; assert torch.xpu.is_available()' 2>/dev/null; then
+    echo "XPU available, proceeding with test."
+    torchrun --nproc_per_node 2 "${SCRIPT_DIR}/test_mx_dtensor.py"
+
+else
+    echo "Skipping test_mx_dtensor.sh because no CUDA or XPU devices are available."
+    exit
+fi
