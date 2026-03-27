@@ -722,7 +722,10 @@ def _addmm_mx_dispatch(
 
         if a.elem_dtype == torch.float8_e4m3fn:
             assert b.elem_dtype == torch.float8_e4m3fn
-            if torch_version_at_least("2.10.0"):
+            # not isinstance(a.qdata, DTensor) is a workaround for bug in pytorch
+            # where sharding strategy is not registered for the "new" api (_scaled_mm_v
+            # called via F.scaled_mm)
+            if torch_version_at_least("2.10.0") and not isinstance(a.qdata, DTensor):
                 res = F.scaled_mm(
                     a.qdata,
                     b.qdata,
