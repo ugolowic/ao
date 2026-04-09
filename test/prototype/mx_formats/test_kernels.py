@@ -649,19 +649,18 @@ def test_cuda_mx_dim0_not_supported():
 
 
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(
-    not is_sm_at_least_100() and not is_MI350(),
-    reason="mxfp8 requires CUDA capability 10.0 or greater or ROCm gfx950 or greater.",
-)
-@pytest.mark.skipif(
-    not is_cuda_version_at_least(12, 8),
-    reason="CUDA version >= 12.8 required for MXFP8 CUDA kernels",
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("scaling_mode", (ScaleCalculationMode.RCEIL,))
-def test_triton_mxfp8_dim0_special_values(scaling_mode: ScaleCalculationMode):
+def test_triton_mxfp8_dim0_special_values(device, scaling_mode: ScaleCalculationMode):
+    if device == "cuda":
+        if not is_sm_at_least_100() and not is_MI350():
+            pytest.skip("mxfp8 requires CUDA capability 10.0 or greater or ROCm gfx950 or greater.")
+        if not is_cuda_version_at_least(12, 8):
+            pytest.skip("CUDA version >= 12.8 required for MXFP8 CUDA kernels")
+
     # Create tensor with special values - make it compatible with block_size=32
     block_size = 32
-    special_vals = torch.zeros(2, block_size, dtype=torch.bfloat16, device="cuda")
+    special_vals = torch.zeros(2, block_size, dtype=torch.bfloat16, device=device)
 
     # Fill first few elements of each row with special values
     special_vals[0, :4] = torch.tensor(
@@ -742,22 +741,21 @@ def test_triton_mxfp8_dim0_special_values(scaling_mode: ScaleCalculationMode):
 
 
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(
-    not is_sm_at_least_100() and not is_MI350(),
-    reason="mxfp8 requires CUDA capability 10.0 or greater or ROCm gfx950 or greater.",
-)
-@pytest.mark.skipif(
-    not is_cuda_version_at_least(12, 8),
-    reason="CUDA version >= 12.8 required for MXFP8 CUDA kernels",
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("scaling_mode", (ScaleCalculationMode.RCEIL,))
-def test_triton_mxfp8_dim0_overflow_underflow(scaling_mode):
+def test_triton_mxfp8_dim0_overflow_underflow(device, scaling_mode):
     """Test with values near overflow and underflow thresholds."""
+    if device == "cuda":
+        if not is_sm_at_least_100() and not is_MI350():
+            pytest.skip("mxfp8 requires CUDA capability 10.0 or greater or ROCm gfx950 or greater.")
+        if not is_cuda_version_at_least(12, 8):
+            pytest.skip("CUDA version >= 12.8 required for MXFP8 CUDA kernels")
+
     fp8_max = torch.finfo(torch.float8_e4m3fn).max
     fp8_subnormal_min = 2e-9  # smallest positive subnormal for e4m3: https://www.emergentmind.com/topics/mxfp8-e4m3-floating-point-format
     block_size = 32
 
-    test_vals = torch.zeros(4, block_size, dtype=torch.bfloat16, device="cuda")
+    test_vals = torch.zeros(4, block_size, dtype=torch.bfloat16, device=device)
 
     # Row 0: elem 0 is near max, elems 1-3 are above max
     test_vals[0, :4] = torch.tensor(
@@ -836,19 +834,20 @@ def test_triton_mxfp8_dim0_overflow_underflow(scaling_mode):
 
 
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.skipif(
-    not is_cuda_version_at_least(12, 8), reason="CUDA version >= 12.8 required"
-)
-@pytest.mark.skipif(
-    not is_sm_at_least_100(), reason="CUDA capability 10.0 or greater required"
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize("scaling_mode", (ScaleCalculationMode.RCEIL,))
-def test_all_nan_block_scale_behavior(scaling_mode):
+def test_all_nan_block_scale_behavior(device, scaling_mode):
     """
     Test that PyTorch and Triton implementations align on NaN scale behavior:
     - Any NaN in block: scale = NaN, entire quantized block becomes NaN
     """
+    if device == "cuda":
+        if not is_sm_at_least_100():
+            pytest.skip("CUDA capability 10.0 or greater required")
+        if not is_cuda_version_at_least(12, 8):
+            pytest.skip("CUDA version >= 12.8 required")
+
+
     from torchao.prototype.mx_formats.mx_tensor import to_mx
 
     block_size = 32
@@ -857,7 +856,7 @@ def test_all_nan_block_scale_behavior(scaling_mode):
     # First 32 elements: mixed NaN + real values
     # Second 32 elements: all NaN values
     # Third 32 elements: normal values for reference
-    test_vals = torch.zeros(3 * block_size, dtype=torch.bfloat16, device="cuda")
+    test_vals = torch.zeros(3 * block_size, dtype=torch.bfloat16, device=device)
 
     # Block 1: Mixed NaN + real values [NaN, 1.0, NaN, 5.0, NaN, 3.0, ...]
     test_vals[:block_size:3] = float("nan")  # Every 3rd element is NaN
@@ -936,20 +935,19 @@ def test_all_nan_block_scale_behavior(scaling_mode):
 
 
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(
-    not is_sm_at_least_100() and not is_MI350(),
-    reason="mxfp8 requires CUDA capability 10.0 or greater or ROCm gfx950 or greater.",
-)
-@pytest.mark.skipif(
-    not is_cuda_version_at_least(12, 8),
-    reason="CUDA version >= 12.8 required for MXFP8 CUDA kernels",
-)
+@pytest.mark.parametrize("device", devices)
 @pytest.mark.parametrize(
     "scaling_mode", (ScaleCalculationMode.RCEIL, ScaleCalculationMode.FLOOR)
 )
-def test_triton_mxfp8_dim0_large_tensor_offset_no_overflow(scaling_mode):
+def test_triton_mxfp8_dim0_large_tensor_offset_no_overflow(device, scaling_mode):
     """Test with large tensor whose offsets exceeds the max int32 value."""
-    x = torch.randn((184320, 14336), dtype=torch.bfloat16, device="cuda")
+    if device == "cuda":
+        if not is_sm_at_least_100() and not is_MI350():
+            pytest.skip("mxfp8 requires CUDA capability 10.0 or greater or ROCm gfx950 or greater.")
+        if not is_cuda_version_at_least(12, 8):
+            pytest.skip("CUDA version >= 12.8 required for MXFP8 CUDA kernels")
+
+    x = torch.randn((184320, 14336), dtype=torch.bfloat16, device=device)
     block_size = 32
     x_mx_ref, x_s_ref = triton_to_mxfp8_dim0_reference(
         x, block_size=block_size, scaling_mode=scaling_mode
